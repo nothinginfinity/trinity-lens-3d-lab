@@ -30,7 +30,7 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
 
 /* ---- Everything below the top bar shares the remaining viewport height ---- */
 .stage{flex:1 1 auto;position:relative;min-height:0}
-#canvas{width:100%;height:100%;display:block;cursor:grab}
+#canvas{width:100%;height:100%;display:block;cursor:grab;touch-action:none}
 #canvas:active{cursor:grabbing}
 
 .mode-bar{position:absolute;top:12px;left:50%;transform:translateX(-50%);background:var(--bg-panel);border:2px solid var(--accent-trinity);border-radius:10px;padding:.5rem .9rem;z-index:900;display:flex;gap:.9rem;box-shadow:0 8px 24px rgba(255,215,0,.35)}
@@ -60,6 +60,8 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
 .gz-btn{width:38px;height:38px;background:rgba(30,30,30,.9);border:1px solid var(--border);border-radius:7px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:1.1rem;transition:all .2s}
 .gz-btn.active{border-color:var(--accent-trinity);background:rgba(255,215,0,.2);box-shadow:0 0 20px rgba(255,215,0,.5)}
 .hints{display:none} /* keyboard hints don't apply on touch; removed instead of overlapping */
+.touch-hint{position:absolute;top:60px;left:50%;transform:translateX(-50%);background:var(--bg-panel);border:1px solid rgba(255,215,0,.3);border-radius:8px;padding:.4rem .8rem;font-size:.68rem;color:var(--text-secondary);z-index:800;text-align:center;max-width:90vw}
+@media (min-width:701px){.touch-hint{display:none}}
 .key{background:rgba(255,255,255,.1);border:1px solid var(--border);border-radius:4px;padding:.2rem .45rem;font-family:monospace;font-size:.75rem}
 
 .inspector{position:absolute;left:0;right:0;bottom:0;background:var(--bg-panel);border-top:2px solid var(--accent-trinity);border-radius:12px 12px 0 0;padding:.9rem;z-index:950;display:none;max-height:52%;overflow-y:auto;box-shadow:0 -8px 30px rgba(0,0,0,.6)}
@@ -128,6 +130,8 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
     <div class="mode-btn" data-mode="transform">🔧</div>
     <div class="mode-btn" data-mode="inspect">🔍</div>
   </div>
+
+  <div class="touch-hint" id="touchHint">Drag = look around · Pinch = zoom · Tap a stone = select · Hold = menu · 🔍 mode taps open inspector</div>
 
   <div class="ctx-menu" id="ctxMenu">
     <div class="ctx-item" onclick="inspectSelected()">🔍 Inspect (LOD ladder)</div>
@@ -280,77 +284,206 @@ function init() {
   loadChain(document.getElementById('chainInput').value.trim());
 }
 
+// ---- Touch state (separate from mouse state; touch has no e.buttons /
+// e.movementX, so deltas are computed by hand from prior touch positions) ----
+let touchStartPos = null, touchStartTime = 0, touchMoved = false;
+let pinchLastDist = null, panLastMid = null;
+let longPressTimer = null;
+const TAP_MOVE_THRESHOLD = 8;   // px — below this, a touch is a "tap" not a drag
+const TAP_MAX_DURATION = 400;   // ms
+const LONG_PRESS_MS = 550;
+
 function setupEvents() {
   window.addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
   const cv = document.getElementById('canvas');
+  // Mouse (desktop/trackpad)
   cv.addEventListener('mousemove', onMove);
   cv.addEventListener('mousedown', onDown);
   cv.addEventListener('mouseup', () => { dragging = false; dragged = null; });
   cv.addEventListener('contextmenu', onCtx);
   cv.addEventListener('wheel', e => { e.preventDefault(); camera.position.multiplyScalar(1 + e.deltaY * .001); }, { passive: false });
+  // Touch (phones/tablets) — needs its own path; touch never fires
+  // mousemove/wheel with usable deltas, so none of the above reaches it.
+  cv.addEventListener('touchstart', onTouchStart, { passive: false });
+  cv.addEventListener('touchmove', onTouchMove, { passive: false });
+  cv.addEventListener('touchend', onTouchEnd, { passive: false });
+  cv.addEventListener('touchcancel', onTouchEnd, { passive: false });
   document.addEventListener('keydown', onKey);
   document.querySelectorAll('.mode-btn').forEach(el => el.addEventListener('click', () => setMode(el.dataset.mode)));
   document.getElementById('chainInput').addEventListener('keydown', e => { if (e.key === 'Enter') loadChain(e.target.value.trim()); });
   document.getElementById('searchInput').addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(e.target.value.trim()); });
 }
 
-function onMove(e) {
-  mouse.x = (e.clientX / innerWidth) * 2 - 1;
-  mouse.y = -(e.clientY / innerHeight) * 2 + 1;
-  const cv = document.getElementById('canvas');
-  if (dragging && dragged && mode === 'transform') {
-    const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
-    if (gizmo === 'translate') {
-      const r = new THREE.Vector3(), u = new THREE.Vector3(0, 1, 0);
-      camera.getWorldDirection(r); r.cross(u).normalize();
-      dragged.mesh.position.x += r.x * dx * .05;
-      dragged.mesh.position.z += r.z * dx * .05;
-      dragged.mesh.position.y -= dy * .05;
-      if (snap) { ['x', 'y', 'z'].forEach(a => { dragged.mesh.position[a] = Math.round(dragged.mesh.position[a] * 2) / 2; }); }
-    } else if (gizmo === 'rotate') { dragged.mesh.rotation.y += dx * .01; dragged.mesh.rotation.x += dy * .01; }
-    else if (gizmo === 'scale') { const f = 1 + (dx + dy) * .01; dragged.mesh.scale.multiplyScalar(f); dragged.mesh.scale.clampScalar(.3, 3); }
-    prev = { x: e.clientX, y: e.clientY };
-  } else if (e.buttons === 1 && mode === 'navigate' && !e.shiftKey) {
-    const eu = new THREE.Euler(0, 0, 0, 'YXZ'); eu.setFromQuaternion(camera.quaternion);
-    eu.y -= (e.movementX || 0) * .005; eu.x -= (e.movementY || 0) * .005;
-    eu.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, eu.x));
-    camera.quaternion.setFromEuler(eu);
-  } else if (e.buttons === 4 || (e.buttons === 1 && e.shiftKey)) {
+// ---- Shared gesture logic, used by both mouse and touch handlers ----
+function updateMouseNDC(clientX, clientY) {
+  mouse.x = (clientX / innerWidth) * 2 - 1;
+  mouse.y = -(clientY / innerHeight) * 2 + 1;
+}
+
+function orbitCamera(dx, dy) {
+  const eu = new THREE.Euler(0, 0, 0, 'YXZ'); eu.setFromQuaternion(camera.quaternion);
+  eu.y -= dx * .005; eu.x -= dy * .005;
+  eu.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, eu.x));
+  camera.quaternion.setFromEuler(eu);
+}
+
+function panCamera(dx, dy) {
+  const r = new THREE.Vector3(), u = new THREE.Vector3(0, 1, 0);
+  camera.getWorldDirection(r); r.cross(u).normalize(); u.cross(r).normalize();
+  camera.position.addScaledVector(r, -dx * .05);
+  camera.position.addScaledVector(u, dy * .05);
+}
+
+function zoomCamera(scaleFactor) { camera.position.multiplyScalar(scaleFactor); }
+
+function applyTransformDelta(dx, dy) {
+  if (!dragged) return;
+  if (gizmo === 'translate') {
     const r = new THREE.Vector3(), u = new THREE.Vector3(0, 1, 0);
-    camera.getWorldDirection(r); r.cross(u).normalize(); u.cross(r).normalize();
-    camera.position.addScaledVector(r, -(e.movementX || e.clientX - prev.x) * .05);
-    camera.position.addScaledVector(u, (e.movementY || e.clientY - prev.y) * .05);
-    prev = { x: e.clientX, y: e.clientY };
+    camera.getWorldDirection(r); r.cross(u).normalize();
+    dragged.mesh.position.x += r.x * dx * .05;
+    dragged.mesh.position.z += r.z * dx * .05;
+    dragged.mesh.position.y -= dy * .05;
+    if (snap) { ['x', 'y', 'z'].forEach(a => { dragged.mesh.position[a] = Math.round(dragged.mesh.position[a] * 2) / 2; }); }
+  } else if (gizmo === 'rotate') {
+    dragged.mesh.rotation.y += dx * .01; dragged.mesh.rotation.x += dy * .01;
+  } else if (gizmo === 'scale') {
+    const f = 1 + (dx + dy) * .01; dragged.mesh.scale.multiplyScalar(f); dragged.mesh.scale.clampScalar(.3, 3);
   }
+}
+
+function pickNodeAtCurrentMouse() {
   raycaster.setFromCamera(mouse, camera);
   const hits = raycaster.intersectObjects(scene.children, true);
-  cv.style.cursor = e.buttons > 0 ? 'grabbing' : 'grab';
-  if (hits.length) { const n = stoneNodes.find(n => n.mesh === hits[0].object || n.mesh === hits[0].object.parent); if (n) cv.style.cursor = 'pointer'; }
+  if (!hits.length) return null;
+  return stoneNodes.find(n => n.mesh === hits[0].object || n.mesh === hits[0].object.parent) || null;
+}
+
+// The single tap/click action: select, start a transform drag, or open the
+// inspector, depending on mode. Shared by mouse onDown and touch tap-end.
+function activateNodeAtPoint(clientX, clientY, shiftLike, startDrag) {
+  updateMouseNDC(clientX, clientY);
+  const node = pickNodeAtCurrentMouse();
+  if (!node) return null;
+  if (mode === 'select' || mode === 'transform') {
+    shiftLike ? toggleSel(node) : sel(node, true);
+    if (mode === 'transform' && startDrag) { dragged = node; dragging = true; }
+  } else if (mode === 'inspect') {
+    sel(node, true); openInspector(node);
+  }
+  return node;
+}
+
+function onMove(e) {
+  updateMouseNDC(e.clientX, e.clientY);
+  const cv = document.getElementById('canvas');
+  if (dragging && dragged && mode === 'transform') {
+    applyTransformDelta(e.clientX - prev.x, e.clientY - prev.y);
+    prev = { x: e.clientX, y: e.clientY };
+  } else if (e.buttons === 1 && mode === 'navigate' && !e.shiftKey) {
+    orbitCamera(e.movementX || 0, e.movementY || 0);
+  } else if (e.buttons === 4 || (e.buttons === 1 && e.shiftKey)) {
+    panCamera(e.movementX || (e.clientX - prev.x), e.movementY || (e.clientY - prev.y));
+    prev = { x: e.clientX, y: e.clientY };
+  }
+  const node = pickNodeAtCurrentMouse();
+  cv.style.cursor = e.buttons > 0 ? 'grabbing' : (node ? 'pointer' : 'grab');
 }
 
 function onDown(e) {
   if (e.button !== 0) return;
-  raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects(scene.children, true);
-  if (hits.length) {
-    const node = stoneNodes.find(n => n.mesh === hits[0].object || n.mesh === hits[0].object.parent);
-    if (node) {
-      if (mode === 'select' || mode === 'transform') {
-        e.shiftKey ? toggleSel(node) : sel(node, true);
-        if (mode === 'transform') { dragged = node; dragging = true; prev = { x: e.clientX, y: e.clientY }; }
-      } else if (mode === 'inspect') {
-        sel(node, true); openInspector(node);
-      }
-    }
-  }
+  activateNodeAtPoint(e.clientX, e.clientY, e.shiftKey, true);
   prev = { x: e.clientX, y: e.clientY };
 }
 
 function onCtx(e) {
   e.preventDefault();
-  raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects(scene.children, true);
-  if (hits.length) { const n = stoneNodes.find(n => n.mesh === hits[0].object || n.mesh === hits[0].object.parent); if (n) { sel(n, true); showCtx(e.clientX, e.clientY); } }
+  updateMouseNDC(e.clientX, e.clientY);
+  const node = pickNodeAtCurrentMouse();
+  if (node) { sel(node, true); showCtx(e.clientX, e.clientY); }
+}
+
+// ---- Touch handlers ----
+function touchDist(t0, t1) { return Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY); }
+function touchMid(t0, t1) { return { x: (t0.clientX + t1.clientX) / 2, y: (t0.clientY + t1.clientY) / 2 }; }
+
+function onTouchStart(e) {
+  e.preventDefault();
+  clearTimeout(longPressTimer);
+  const touches = e.touches;
+  if (touches.length === 1) {
+    const t = touches[0];
+    prev = { x: t.clientX, y: t.clientY };
+    touchStartPos = { x: t.clientX, y: t.clientY };
+    touchStartTime = Date.now();
+    touchMoved = false;
+    updateMouseNDC(t.clientX, t.clientY);
+    // In transform mode, grab the node immediately so dragging can begin
+    // on the very next touchmove (mirrors mouse onDown's dragged/dragging).
+    if (mode === 'transform') {
+      const node = pickNodeAtCurrentMouse();
+      if (node) { sel(node, true); dragged = node; dragging = true; }
+    }
+    // Long-press => context menu, same as desktop right-click.
+    longPressTimer = setTimeout(() => {
+      if (!touchMoved && touchStartPos) {
+        updateMouseNDC(touchStartPos.x, touchStartPos.y);
+        const node = pickNodeAtCurrentMouse();
+        if (node) { sel(node, true); showCtx(touchStartPos.x, touchStartPos.y); }
+      }
+    }, LONG_PRESS_MS);
+  } else if (touches.length === 2) {
+    pinchLastDist = touchDist(touches[0], touches[1]);
+    panLastMid = touchMid(touches[0], touches[1]);
+    dragging = false; dragged = null;
+  }
+}
+
+function onTouchMove(e) {
+  e.preventDefault();
+  const touches = e.touches;
+  if (touches.length === 1) {
+    const t = touches[0];
+    const dx = t.clientX - prev.x, dy = t.clientY - prev.y;
+    if (Math.abs(t.clientX - (touchStartPos?.x ?? t.clientX)) > TAP_MOVE_THRESHOLD ||
+        Math.abs(t.clientY - (touchStartPos?.y ?? t.clientY)) > TAP_MOVE_THRESHOLD) {
+      touchMoved = true;
+      clearTimeout(longPressTimer);
+    }
+    updateMouseNDC(t.clientX, t.clientY);
+    if (dragging && dragged && mode === 'transform') {
+      applyTransformDelta(dx, dy);
+    } else if (mode === 'navigate' || mode === 'select' || mode === 'inspect') {
+      orbitCamera(dx, dy);
+    }
+    prev = { x: t.clientX, y: t.clientY };
+  } else if (touches.length === 2) {
+    touchMoved = true;
+    clearTimeout(longPressTimer);
+    const dist = touchDist(touches[0], touches[1]);
+    const mid = touchMid(touches[0], touches[1]);
+    if (pinchLastDist != null) zoomCamera(pinchLastDist / dist);
+    if (panLastMid != null) panCamera(mid.x - panLastMid.x, mid.y - panLastMid.y);
+    pinchLastDist = dist; panLastMid = mid;
+  }
+}
+
+function onTouchEnd(e) {
+  e.preventDefault();
+  clearTimeout(longPressTimer);
+  const wasTap = !touchMoved && touchStartPos && (Date.now() - touchStartTime) < TAP_MAX_DURATION;
+  if (wasTap && mode !== 'transform') {
+    activateNodeAtPoint(touchStartPos.x, touchStartPos.y, false, false);
+  }
+  if (e.touches.length === 0) {
+    dragging = false; dragged = null; touchStartPos = null;
+    pinchLastDist = null; panLastMid = null;
+  } else if (e.touches.length === 1) {
+    // Dropped from two fingers to one — resync so the remaining finger
+    // doesn't cause a jump.
+    prev = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    pinchLastDist = null; panLastMid = null;
+  }
 }
 
 function onKey(e) {
@@ -374,16 +507,25 @@ function setGizmoMode(g) {
 window.setGizmoMode = setGizmoMode;
 window.toggleSnap = () => { snap = !snap; const b = document.querySelector('[data-gz="snap"]'); if (b) b.classList.toggle('active', snap); log(`Snap: ${snap ? 'on' : 'off'}`); };
 
+// Selection feedback is deliberately loud (emissive bump + ~25% scale-up)
+// because a subtle glow alone is easy to miss on a small phone screen.
+function markSelected(node, on) {
+  node.mesh.children[0].material.emissiveIntensity = on ? .9 : node.baseEmissive;
+  node.mesh.scale.setScalar(on ? 1.25 : 1);
+}
 function sel(node, clear = false) {
-  if (clear) { selNodes.forEach(n => n.mesh.children[0].material.emissiveIntensity = n.baseEmissive); selNodes = []; }
-  if (!selNodes.includes(node)) { selNodes.push(node); node.mesh.children[0].material.emissiveIntensity = .9; log(`Selected: ${node.title}`); }
+  if (clear) { selNodes.forEach(n => markSelected(n, false)); selNodes = []; }
+  if (!selNodes.includes(node)) {
+    selNodes.push(node); markSelected(node, true); log(`Selected: ${node.title}`);
+    const hint = document.getElementById('touchHint'); if (hint) hint.style.display = 'none';
+  }
 }
 function toggleSel(node) {
   const i = selNodes.indexOf(node);
-  if (i > -1) { selNodes.splice(i, 1); node.mesh.children[0].material.emissiveIntensity = node.baseEmissive; }
-  else { selNodes.push(node); node.mesh.children[0].material.emissiveIntensity = .9; }
+  if (i > -1) { selNodes.splice(i, 1); markSelected(node, false); }
+  else { selNodes.push(node); markSelected(node, true); }
 }
-function clearSel() { selNodes.forEach(n => n.mesh.children[0].material.emissiveIntensity = n.baseEmissive); selNodes = []; }
+function clearSel() { selNodes.forEach(n => markSelected(n, false)); selNodes = []; }
 
 function showCtx(x, y) { const m = document.getElementById('ctxMenu'); m.style.left = x + 'px'; m.style.top = y + 'px'; m.classList.add('visible'); }
 function hideCtx() { document.getElementById('ctxMenu').classList.remove('visible'); }
