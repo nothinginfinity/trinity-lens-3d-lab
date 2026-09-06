@@ -346,7 +346,7 @@ function applyTransformDelta(dx, dy) {
     dragged.mesh.position.x += r.x * dx * .05;
     dragged.mesh.position.z += r.z * dx * .05;
     dragged.mesh.position.y -= dy * .05;
-    if (snap) { ['x', 'y', 'z'].forEach(a => { dragged.mesh.position[] = Math.round(dragged.mesh.position[a] * 2) / 2; }); }
+    if (snap) { ['x', 'y', 'z'].forEach(a => { dragged.mesh.position[a] = Math.round(dragged.mesh.position[a] * 2) / 2; }); }
   } else if (gizmo === 'rotate') {
     dragged.mesh.rotation.y += dx * .01; dragged.mesh.rotation.x += dy * .01;
   } else if (gizmo === 'scale') {
