@@ -1,1 +1,623 @@
-PLACEHOLDER
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CairnStone 3D Console</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg-dark:#0a0a0a;--bg-panel:rgba(26,26,26,0.97);--accent-trinity:#FFD700;--accent-primary:#1FB8CD;--accent-secondary:#DB4545;--text-primary:#e0e0e0;--text-secondary:#94A3B8;--border:#333;--glow-green:#10B981;--glow-purple:#8B5CF6;--glow-orange:#F59E0B}
+html,body{height:100%}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg-dark);color:var(--text-primary);display:flex;flex-direction:column;overflow:hidden}
+
+/* ---- Top bar: real page flow, not absolutely positioned, so it can never
+   be covered and never overlaps anything else. This is what was broken. ---- */
+.topbar{flex:0 0 auto;background:linear-gradient(135deg,var(--bg-panel),rgba(42,42,42,.9));border-bottom:2px solid var(--accent-trinity);padding:.65rem .9rem;z-index:1000;box-shadow:0 4px 20px rgba(255,215,0,.25)}
+.topbar h1{background:linear-gradient(135deg,var(--accent-trinity),var(--accent-primary));-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-size:1.05rem;font-weight:700;white-space:nowrap;margin-bottom:.5rem}
+.chain-bar{display:flex;gap:.4rem;margin-bottom:.4rem}
+.chain-bar input{flex:1;min-width:0;background:rgba(0,0,0,.4);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);padding:.45rem .55rem;font-size:.8rem}
+.chain-bar input:focus{outline:none;border-color:var(--accent-trinity)}
+.chain-bar button{background:rgba(255,215,0,.15);border:1px solid var(--accent-trinity);border-radius:6px;color:var(--accent-trinity);padding:.45rem .7rem;font-size:.75rem;cursor:pointer;white-space:nowrap;flex:0 0 auto}
+.chain-bar button:active{background:rgba(255,215,0,.35)}
+
+/* Always-visible status line — this is the thing the screenshot was missing.
+   No scrolling, no hunting a corner panel: load/success/error shows here. */
+#statusBar{font-size:.78rem;padding:.4rem .6rem;border-radius:6px;background:rgba(0,0,0,.35);color:var(--text-secondary);display:flex;justify-content:space-between;gap:.5rem;flex-wrap:wrap}
+#statusBar.ok{color:var(--glow-green)}
+#statusBar.err{color:var(--accent-secondary);background:rgba(219,69,69,.15)}
+#statusBar.loading{color:var(--accent-primary)}
+#statusBar .stats{color:var(--text-secondary);font-family:monospace;font-size:.72rem}
+
+/* ---- Everything below the top bar shares the remaining viewport height ---- */
+.stage{flex:1 1 auto;position:relative;min-height:0}
+#canvas{width:100%;height:100%;display:block;cursor:grab}
+#canvas:active{cursor:grabbing}
+
+.mode-bar{position:absolute;top:12px;left:50%;transform:translateX(-50%);background:var(--bg-panel);border:2px solid var(--accent-trinity);border-radius:10px;padding:.5rem .9rem;z-index:900;display:flex;gap:.9rem;box-shadow:0 8px 24px rgba(255,215,0,.35)}
+.mode-btn{display:flex;align-items:center;gap:.35rem;font-size:.72rem;padding:.35rem .55rem;border-radius:7px;cursor:pointer;transition:all .3s;white-space:nowrap}
+.mode-btn.active{background:rgba(255,215,0,.2);box-shadow:0 0 20px rgba(255,215,0,.3)}
+.mode-btn:hover{background:rgba(255,215,0,.1)}
+.ctx-menu{position:absolute;background:var(--bg-panel);border:1px solid var(--accent-trinity);border-radius:12px;padding:.75rem;z-index:1000;box-shadow:0 8px 32px rgba(0,0,0,.8);display:none;min-width:180px}
+.ctx-menu.visible{display:block}
+.ctx-item{padding:.6rem .8rem;margin:.15rem 0;border-radius:6px;cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:.55rem;font-size:.8rem}
+.ctx-item:hover{background:rgba(255,215,0,.2)}
+
+/* Chain-state card: a small toggleable drawer anchored top-right of the
+   stage, NOT a full-width panel — it must never cover the whole canvas
+   on a narrow screen the way it did before. */
+.side-panel{position:absolute;right:8px;top:8px;background:var(--bg-panel);border:1px solid rgba(255,215,0,.3);border-radius:10px;z-index:800;width:min(240px, 62vw);max-height:min(58vh, 420px);overflow-y:auto;font-size:.78rem}
+.side-panel-hdr{display:flex;justify-content:space-between;align-items:center;padding:.55rem .7rem;cursor:pointer;border-bottom:1px solid rgba(255,215,0,.2)}
+.panel-title{font-size:.8rem;font-weight:600;color:var(--accent-trinity)}
+.side-panel-body{padding:.6rem .7rem;display:none}
+.side-panel.open .side-panel-body{display:block}
+.stat-row{display:flex;justify-content:space-between;font-size:.72rem;padding:.25rem 0;color:var(--text-secondary)}
+.stat-row b{color:var(--text-primary);font-family:monospace}
+.legend{margin-top:.6rem;padding-top:.6rem;border-top:1px solid rgba(255,215,0,.2);font-size:.68rem}
+.legend-row{display:flex;align-items:center;gap:.4rem;margin:.25rem 0}
+.legend-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+
+.gizmos{position:absolute;bottom:8px;left:8px;background:var(--bg-panel);border:1px solid rgba(31,184,205,.3);border-radius:10px;padding:.5rem;z-index:800;display:grid;grid-template-columns:repeat(2,1fr);gap:.35rem}
+.gz-btn{width:38px;height:38px;background:rgba(30,30,30,.9);border:1px solid var(--border);border-radius:7px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:1.1rem;transition:all .2s}
+.gz-btn.active{border-color:var(--accent-trinity);background:rgba(255,215,0,.2);box-shadow:0 0 20px rgba(255,215,0,.5)}
+.hints{display:none} /* keyboard hints don't apply on touch; removed instead of overlapping */
+.key{background:rgba(255,255,255,.1);border:1px solid var(--border);border-radius:4px;padding:.2rem .45rem;font-family:monospace;font-size:.75rem}
+
+.inspector{position:absolute;left:0;right:0;bottom:0;background:var(--bg-panel);border-top:2px solid var(--accent-trinity);border-radius:12px 12px 0 0;padding:.9rem;z-index:950;display:none;max-height:52%;overflow-y:auto;box-shadow:0 -8px 30px rgba(0,0,0,.6)}
+.inspector.open{display:block}
+.insp-hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:.75rem;gap:.5rem}
+.insp-title{font-weight:600;color:var(--accent-trinity);font-size:.9rem;word-break:break-word}
+.insp-close{cursor:pointer;width:24px;height:24px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border-radius:4px;background:rgba(255,255,255,.1);transition:all .2s}
+.insp-close:hover{background:var(--accent-secondary)}
+.insp-hash{font-family:monospace;font-size:.7rem;color:var(--text-secondary);word-break:break-all;margin-bottom:.75rem}
+.lod-tabs{display:flex;gap:.35rem;margin-bottom:.75rem;flex-wrap:wrap}
+.lod-tab{background:rgba(30,30,30,.9);border:1px solid var(--border);border-radius:6px;padding:.3rem .65rem;font-size:.75rem;cursor:pointer;transition:all .2s}
+.lod-tab:hover{border-color:var(--accent-primary)}
+.lod-tab.active{border-color:var(--accent-trinity);background:rgba(255,215,0,.15);color:var(--accent-trinity)}
+.lod-body{background:rgba(0,0,0,.35);border-radius:8px;padding:.75rem;font-size:.78rem;line-height:1.5;font-family:monospace;white-space:pre-wrap;word-break:break-word;max-height:280px;overflow-y:auto}
+.lod-loading{color:var(--text-secondary);font-style:italic}
+.badge{display:inline-block;font-size:.65rem;padding:.15rem .45rem;border-radius:4px;margin-right:.35rem;font-weight:600}
+.badge.head{background:rgba(255,215,0,.25);color:var(--accent-trinity)}
+.badge.pathhead{background:rgba(31,184,205,.25);color:var(--accent-primary)}
+/* Log dock: full-width, collapsed to a thin strip by default so it never
+   eats the 3D view, tap the header to expand. Always reachable — this is
+   the "let me see what's going on" panel. */
+.log-dock{position:absolute;left:0;right:0;bottom:0;background:var(--bg-panel);border-top:1px solid rgba(31,184,205,.4);z-index:850;transition:max-height .25s ease}
+.log-dock-hdr{display:flex;justify-content:space-between;align-items:center;padding:.4rem .8rem;cursor:pointer;font-size:.72rem;color:var(--accent-primary)}
+.log{max-height:26vh;overflow-y:auto;padding:0 .8rem .6rem;display:none}
+.log-dock.open .log{display:block}
+.log-line{font-size:.72rem;margin:.2rem 0;color:var(--text-secondary)}
+.log-line .t{color:var(--accent-primary)}
+.log-line.ok{color:var(--glow-green)}
+.log-line.warn{color:var(--glow-orange)}
+.log-line.err{color:var(--accent-secondary)}
+::-webkit-scrollbar{width:8px}
+::-webkit-scrollbar-track{background:rgba(0,0,0,.3)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:var(--accent-trinity)}
+
+@media (min-width: 701px) {
+  .hints{display:flex;position:absolute;bottom:8px;left:50%;transform:translateX(-50%);background:var(--bg-panel);border:1px solid rgba(255,215,0,.3);border-radius:10px;padding:.5rem 1.2rem;z-index:800;gap:1.2rem;font-size:.78rem}
+  .hint{display:flex;gap:.4rem;align-items:center}
+  .side-panel{width:260px}
+}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>🪨 CairnStone 3D Console</h1>
+  <div class="chain-bar">
+    <input id="chainInput" type="text" value="trinity-lens-3d-lab" placeholder="chain name...">
+    <button onclick="loadChain(document.getElementById('chainInput').value.trim())">Load</button>
+  </div>
+  <div class="chain-bar">
+    <input id="searchInput" type="text" placeholder="search this chain...">
+    <button onclick="runSearch(document.getElementById('searchInput').value.trim())">🔎</button>
+  </div>
+  <div id="statusBar" class="loading">
+    <span id="statusText">Booting…</span>
+    <span class="stats" id="statusStats"></span>
+  </div>
+</div>
+
+<div class="stage">
+  <canvas id="canvas"></canvas>
+
+  <div class="mode-bar">
+    <div class="mode-btn active" data-mode="navigate">🧭</div>
+    <div class="mode-btn" data-mode="select">👆</div>
+    <div class="mode-btn" data-mode="transform">🔧</div>
+    <div class="mode-btn" data-mode="inspect">🔍</div>
+  </div>
+
+  <div class="ctx-menu" id="ctxMenu">
+    <div class="ctx-item" onclick="inspectSelected()">🔍 Inspect (LOD ladder)</div>
+    <div class="ctx-item" onclick="copyHashSelected()">📋 Copy stone hash</div>
+    <div class="ctx-item" onclick="logNeighborsSelected()">🕸️ Log connected edges</div>
+  </div>
+
+  <div class="side-panel" id="sidePanel">
+    <div class="side-panel-hdr" onclick="document.getElementById('sidePanel').classList.toggle('open')">
+      <span class="panel-title">📊 Chain State</span>
+      <span>▾</span>
+    </div>
+    <div class="side-panel-body">
+      <div class="stat-row"><span>Chain</span><b id="statChain">—</b></div>
+      <div class="stat-row"><span>HEAD</span><b id="statHead">—</b></div>
+      <div class="stat-row"><span>Stones</span><b id="statStones">—</b></div>
+      <div class="stat-row"><span>Edges</span><b id="statEdges">—</b></div>
+      <div class="legend">
+        <div class="legend-row"><div class="legend-dot" style="background:#FFD700"></div>Chain HEAD</div>
+        <div class="legend-row"><div class="legend-dot" style="background:#1FB8CD"></div>Path HEAD</div>
+        <div class="legend-row"><div class="legend-dot" style="background:#64748B"></div>Historical stone</div>
+        <div class="legend-row" style="margin-top:.4rem"><div class="legend-dot" style="background:#FFD700"></div>documents</div>
+        <div class="legend-row"><div class="legend-dot" style="background:#DB4545"></div>reviews</div>
+        <div class="legend-row"><div class="legend-dot" style="background:#F59E0B"></div>patches</div>
+        <div class="legend-row"><div class="legend-dot" style="background:#8B5CF6"></div>supersedes</div>
+        <div class="legend-row"><div class="legend-dot" style="background:#64748B"></div>references</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="gizmos">
+    <div class="gz-btn" data-gz="translate" onclick="setGizmoMode('translate')">↔️</div>
+    <div class="gz-btn" data-gz="rotate"    onclick="setGizmoMode('rotate')">🔄</div>
+    <div class="gz-btn" data-gz="scale"     onclick="setGizmoMode('scale')">↕️</div>
+    <div class="gz-btn" data-gz="snap"      onclick="toggleSnap()">🧲</div>
+  </div>
+
+  <div class="hints">
+    <div class="hint"><span class="key">Tab</span>Mode</div>
+    <div class="hint"><span class="key">Click</span>Select</div>
+    <div class="hint"><span class="key">Right-click</span>Inspect menu</div>
+    <div class="hint"><span class="key">Shift+Drag</span>Pan</div>
+    <div class="hint"><span class="key">Scroll</span>Zoom</div>
+  </div>
+
+  <div class="inspector" id="inspector">
+    <div class="insp-hdr">
+      <div>
+        <div id="inspBadges"></div>
+        <div class="insp-title" id="inspTitle">—</div>
+      </div>
+      <div class="insp-close" onclick="closeInspector()">✕</div>
+    </div>
+    <div class="insp-hash" id="inspHash"></div>
+    <div class="lod-tabs" id="lodTabs"></div>
+    <div class="lod-body" id="lodBody">Select a level above.</div>
+  </div>
+
+  <div class="log-dock open" id="logDock">
+    <div class="log-dock-hdr" onclick="document.getElementById('logDock').classList.toggle('open')">
+      <span>📜 Activity log (tap to collapse)</span>
+      <span id="logCount"></span>
+    </div>
+    <div class="log" id="log"><div class="log-line ok">🪨 CairnStone console booting...</div></div>
+  </div>
+</div>
+
+<!-- Watchdog: plain script, independent of the ES module below. If the
+     module fails to load entirely (e.g. this preview's sandbox blocks the
+     three.js CDN import via CSP), this still reports it instead of
+     leaving a silent blank screen. -->
+<script>
+  window.addEventListener('error', function (e) {
+    var el = document.getElementById('statusText'), bar = document.getElementById('statusBar');
+    if (el && bar) { bar.className = 'err'; el.textContent = 'Script error: ' + (e.message || 'unknown'); }
+  });
+  setTimeout(function () {
+    if (!window.__cairnstoneBooted) {
+      var el = document.getElementById('statusText'), bar = document.getElementById('statusBar');
+      if (el && bar) {
+        bar.className = 'err';
+        el.textContent = 'Not booted after 6s — the three.js CDN import may be blocked by this preview\u2019s sandbox. Try opening this file directly in a full mobile browser instead of an in-app preview.';
+      }
+    }
+  }, 6000);
+</script>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+<script type="module">
+import * as THREE from 'three';
+window.__cairnstoneBooted = true;
+
+const API = 'https://cairnstone-v6.jaredtechfit.workers.dev';
+
+const EDGE_COLORS = {
+  documents: 0xFFD700,
+  reviews: 0xDB4545,
+  patches: 0xF59E0B,
+  supersedes: 0x8B5CF6,
+  references: 0x64748B,
+};
+const COLOR_HEAD = 0xFFD700;
+const COLOR_PATHHEAD = 0x1FB8CD;
+const COLOR_STONE = 0x64748B;
+
+let scene, camera, renderer, raycaster, mouse;
+let stoneNodes = [], selNodes = [], conns = [], particles = [];
+let mode = 'navigate', gizmo = 'translate', snap = false;
+let dragged = null, dragging = false, prev = { x: 0, y: 0 };
+let currentChain = null;
+let inspectedNode = null;
+const lodCache = new Map(); // hash -> {lod5,lod4,lod3,lod2,lod1}
+
+function log(msg, type = '') {
+  const p = document.getElementById('log');
+  const d = document.createElement('div');
+  d.className = `log-line${type ? ' ' + type : ''}`;
+  d.innerHTML = `<span class="t">[${new Date().toLocaleTimeString()}]</span> ${msg}`;
+  p.appendChild(d); p.scrollTop = p.scrollHeight;
+  if (p.children.length > 60) p.removeChild(p.firstChild);
+  const countEl = document.getElementById('logCount');
+  if (countEl) countEl.textContent = `${p.children.length} lines`;
+}
+
+// Always-visible status line — separate from the log dock, which can be
+// collapsed. state: 'loading' | 'ok' | 'err'
+function setStatus(text, state, stats = '') {
+  const bar = document.getElementById('statusBar');
+  bar.className = state;
+  document.getElementById('statusText').textContent = text;
+  document.getElementById('statusStats').textContent = stats;
+}
+
+function init() {
+  const cv = document.getElementById('canvas');
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0a0a);
+  scene.fog = new THREE.Fog(0x0a0a0a, 40, 140);
+  camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, .1, 1000);
+  camera.position.set(25, 20, 25); camera.lookAt(0, 0, 0);
+  renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true });
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(devicePixelRatio);
+  raycaster = new THREE.Raycaster(); mouse = new THREE.Vector2();
+  scene.add(new THREE.GridHelper(80, 40, 0x333333, 0x1a1a1a));
+  scene.add(new THREE.AmbientLight(0x404040, 1.5));
+  const pl1 = new THREE.PointLight(0xFFD700, 1.5, 140); pl1.position.set(20, 20, 20); scene.add(pl1);
+  const pl2 = new THREE.PointLight(0x1FB8CD, 1, 140); pl2.position.set(-20, 20, -20); scene.add(pl2);
+  setupEvents();
+  animate();
+  loadChain(document.getElementById('chainInput').value.trim());
+}
+
+function setupEvents() {
+  window.addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+  const cv = document.getElementById('canvas');
+  cv.addEventListener('mousemove', onMove);
+  cv.addEventListener('mousedown', onDown);
+  cv.addEventListener('mouseup', () => { dragging = false; dragged = null; });
+  cv.addEventListener('contextmenu', onCtx);
+  cv.addEventListener('wheel', e => { e.preventDefault(); camera.position.multiplyScalar(1 + e.deltaY * .001); }, { passive: false });
+  document.addEventListener('keydown', onKey);
+  document.querySelectorAll('.mode-btn').forEach(el => el.addEventListener('click', () => setMode(el.dataset.mode)));
+  document.getElementById('chainInput').addEventListener('keydown', e => { if (e.key === 'Enter') loadChain(e.target.value.trim()); });
+  document.getElementById('searchInput').addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(e.target.value.trim()); });
+}
+
+function onMove(e) {
+  mouse.x = (e.clientX / innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+  const cv = document.getElementById('canvas');
+  if (dragging && dragged && mode === 'transform') {
+    const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
+    if (gizmo === 'translate') {
+      const r = new THREE.Vector3(), u = new THREE.Vector3(0, 1, 0);
+      camera.getWorldDirection(r); r.cross(u).normalize();
+      dragged.mesh.position.x += r.x * dx * .05;
+      dragged.mesh.position.z += r.z * dx * .05;
+      dragged.mesh.position.y -= dy * .05;
+      if (snap) { ['x', 'y', 'z'].forEach(a => { dragged.mesh.position[a] = Math.round(dragged.mesh.position[a] * 2) / 2; }); }
+    } else if (gizmo === 'rotate') { dragged.mesh.rotation.y += dx * .01; dragged.mesh.rotation.x += dy * .01; }
+    else if (gizmo === 'scale') { const f = 1 + (dx + dy) * .01; dragged.mesh.scale.multiplyScalar(f); dragged.mesh.scale.clampScalar(.3, 3); }
+    prev = { x: e.clientX, y: e.clientY };
+  } else if (e.buttons === 1 && mode === 'navigate' && !e.shiftKey) {
+    const eu = new THREE.Euler(0, 0, 0, 'YXZ'); eu.setFromQuaternion(camera.quaternion);
+    eu.y -= (e.movementX || 0) * .005; eu.x -= (e.movementY || 0) * .005;
+    eu.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, eu.x));
+    camera.quaternion.setFromEuler(eu);
+  } else if (e.buttons === 4 || (e.buttons === 1 && e.shiftKey)) {
+    const r = new THREE.Vector3(), u = new THREE.Vector3(0, 1, 0);
+    camera.getWorldDirection(r); r.cross(u).normalize(); u.cross(r).normalize();
+    camera.position.addScaledVector(r, -(e.movementX || e.clientX - prev.x) * .05);
+    camera.position.addScaledVector(u, (e.movementY || e.clientY - prev.y) * .05);
+    prev = { x: e.clientX, y: e.clientY };
+  }
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects(scene.children, true);
+  cv.style.cursor = e.buttons > 0 ? 'grabbing' : 'grab';
+  if (hits.length) { const n = stoneNodes.find(n => n.mesh === hits[0].object || n.mesh === hits[0].object.parent); if (n) cv.style.cursor = 'pointer'; }
+}
+
+function onDown(e) {
+  if (e.button !== 0) return;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects(scene.children, true);
+  if (hits.length) {
+    const node = stoneNodes.find(n => n.mesh === hits[0].object || n.mesh === hits[0].object.parent);
+    if (node) {
+      if (mode === 'select' || mode === 'transform') {
+        e.shiftKey ? toggleSel(node) : sel(node, true);
+        if (mode === 'transform') { dragged = node; dragging = true; prev = { x: e.clientX, y: e.clientY }; }
+      } else if (mode === 'inspect') {
+        sel(node, true); openInspector(node);
+      }
+    }
+  }
+  prev = { x: e.clientX, y: e.clientY };
+}
+
+function onCtx(e) {
+  e.preventDefault();
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects(scene.children, true);
+  if (hits.length) { const n = stoneNodes.find(n => n.mesh === hits[0].object || n.mesh === hits[0].object.parent); if (n) { sel(n, true); showCtx(e.clientX, e.clientY); } }
+}
+
+function onKey(e) {
+  switch (e.key.toLowerCase()) {
+    case 'tab': e.preventDefault(); cycleMode(); break;
+    case 'escape': clearSel(); hideCtx(); closeInspector(); break;
+  }
+}
+
+function cycleMode() { const ms = ['navigate', 'select', 'transform', 'inspect']; setMode(ms[(ms.indexOf(mode) + 1) % ms.length]); }
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll('.mode-btn').forEach(el => { el.classList.remove('active'); if (el.dataset.mode === m) el.classList.add('active'); });
+  log(`Mode: ${m}`);
+}
+function setGizmoMode(g) {
+  gizmo = g;
+  document.querySelectorAll('.gz-btn').forEach(b => b.classList.remove('active'));
+  const b = document.querySelector(`[data-gz="${g}"]`); if (b) b.classList.add('active');
+}
+window.setGizmoMode = setGizmoMode;
+window.toggleSnap = () => { snap = !snap; const b = document.querySelector('[data-gz="snap"]'); if (b) b.classList.toggle('active', snap); log(`Snap: ${snap ? 'on' : 'off'}`); };
+
+function sel(node, clear = false) {
+  if (clear) { selNodes.forEach(n => n.mesh.children[0].material.emissiveIntensity = n.baseEmissive); selNodes = []; }
+  if (!selNodes.includes(node)) { selNodes.push(node); node.mesh.children[0].material.emissiveIntensity = .9; log(`Selected: ${node.title}`); }
+}
+function toggleSel(node) {
+  const i = selNodes.indexOf(node);
+  if (i > -1) { selNodes.splice(i, 1); node.mesh.children[0].material.emissiveIntensity = node.baseEmissive; }
+  else { selNodes.push(node); node.mesh.children[0].material.emissiveIntensity = .9; }
+}
+function clearSel() { selNodes.forEach(n => n.mesh.children[0].material.emissiveIntensity = n.baseEmissive); selNodes = []; }
+
+function showCtx(x, y) { const m = document.getElementById('ctxMenu'); m.style.left = x + 'px'; m.style.top = y + 'px'; m.classList.add('visible'); }
+function hideCtx() { document.getElementById('ctxMenu').classList.remove('visible'); }
+
+window.inspectSelected = function () { if (selNodes.length) openInspector(selNodes[0]); hideCtx(); };
+window.copyHashSelected = function () {
+  if (!selNodes.length) return hideCtx();
+  const hash = selNodes[0].hash;
+  navigator.clipboard?.writeText(hash).catch(() => {});
+  log(`Copied hash: ${hash}`, 'ok'); hideCtx();
+};
+window.logNeighborsSelected = function () {
+  if (!selNodes.length) return hideCtx();
+  const id = selNodes[0].shortHash;
+  const touching = (currentChain?.edges || []).filter(e => e.startsWith(id + '>') || e.includes('>' + id + ':'));
+  if (!touching.length) log('No edges touch this stone', 'warn');
+  touching.forEach(e => log(`edge: ${e}`));
+  hideCtx();
+};
+
+// ---- LOD inspector ----
+async function fetchLod(hash, level) {
+  const key = hash;
+  if (!lodCache.has(key)) lodCache.set(key, {});
+  const cached = lodCache.get(key);
+  if (cached[level] !== undefined) return cached[level];
+  const res = await fetch(`${API}/v2/stones/${hash}?level=${level}`);
+  const data = await res.json();
+  cached[level] = data.ok ? data.value : { error: data.error || 'fetch failed' };
+  return cached[level];
+}
+
+window.openInspector = openInspector;
+async function openInspector(node) {
+  inspectedNode = node;
+  document.getElementById('inspector').classList.add('open');
+  document.getElementById('inspTitle').textContent = node.title;
+  document.getElementById('inspHash').textContent = node.hash;
+  let badges = '';
+  if (node.isHead) badges += '<span class="badge head">CHAIN HEAD</span>';
+  if (node.isPathHead) badges += '<span class="badge pathhead">PATH HEAD</span>';
+  document.getElementById('inspBadges').innerHTML = badges;
+  const tabs = document.getElementById('lodTabs');
+  tabs.innerHTML = [5, 4, 3, 2, 1].map(n =>
+    `<div class="lod-tab${n === 5 ? ' active' : ''}" data-lod="${n}">LOD${n}</div>`
+  ).join('');
+  tabs.querySelectorAll('.lod-tab').forEach(t => t.addEventListener('click', () => selectLod(node, parseInt(t.dataset.lod))));
+  await selectLod(node, 5);
+}
+window.closeInspector = function () { document.getElementById('inspector').classList.remove('open'); inspectedNode = null; };
+
+async function selectLod(node, level) {
+  document.querySelectorAll('.lod-tab').forEach(t => t.classList.toggle('active', parseInt(t.dataset.lod) === level));
+  const body = document.getElementById('lodBody');
+  body.innerHTML = '<span class="lod-loading">Fetching lod' + level + '...</span>';
+  const value = await fetchLod(node.hash, 'lod' + level);
+  if (inspectedNode !== node) return; // user moved on
+  body.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+}
+
+// ---- Chain loading (real CairnStone data) ----
+window.loadChain = async function (chainName) {
+  if (!chainName) { setStatus('Enter a chain name first', 'err'); return; }
+  setStatus(`Fetching ${chainName}…`, 'loading');
+  log(`Loading chain: ${chainName} ...`);
+  clearScene();
+  const url = `${API}/v2/chains/${encodeURIComponent(chainName)}/manifest?detail=compact`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      setStatus(`HTTP ${res.status} from CairnStone`, 'err');
+      log(`Fetch returned HTTP ${res.status} for ${url}`, 'err');
+      return;
+    }
+    const data = await res.json();
+    if (!data.ok) {
+      setStatus(`Chain error: ${data.error || 'unknown'}`, 'err');
+      log(`Failed to load chain: ${data.error || 'unknown error'}`, 'err');
+      return;
+    }
+    currentChain = data;
+    renderChain(data);
+    const edgeCount = data.edges_shown ?? (data.edges || []).length;
+    document.getElementById('statChain').textContent = data.chain;
+    document.getElementById('statHead').textContent = (data.head || '—').slice(0, 12);
+    document.getElementById('statStones').textContent = data.stones;
+    document.getElementById('statEdges').textContent = edgeCount;
+    setStatus(`Loaded ${data.chain}`, 'ok', `${data.stones} stones · ${edgeCount} edges`);
+    log(`Loaded ${data.stones} stones, ${edgeCount} edges`, 'ok');
+  } catch (err) {
+    // This is the branch that fires if the browser blocks the request
+    // outright (network error, or a CSP in whatever is rendering this
+    // page forbidding outbound fetch) — distinct from a server error.
+    setStatus(`Network/CSP error — see log`, 'err');
+    log(`Chain load error: ${err.message}. If this keeps happening, try opening this file directly in a full browser (not an in-app preview) — some sandboxed previews block outbound fetch entirely.`, 'err');
+  }
+};
+
+function clearScene() {
+  stoneNodes.forEach(n => scene.remove(n.mesh));
+  conns.forEach(c => { if (c.mesh) scene.remove(c.mesh); });
+  particles.forEach(p => scene.remove(p.mesh));
+  stoneNodes = []; selNodes = []; conns = []; particles = [];
+}
+
+function renderChain(data) {
+  const pathHeadIds = new Set((data.path_heads || []).map(p => p.head));
+  const nodesById = new Map();
+
+  // Layout: BFS rings from HEAD using edge adjacency, so topology is
+  // actually visible instead of arbitrary placement.
+  const adj = new Map();
+  (data.nodes || []).forEach(n => adj.set(n.id, []));
+  (data.edges || []).forEach(e => {
+    const m = e.match(/^(.+?)>(.+?):(.+)$/);
+    if (!m) return;
+    const [, from, to] = m;
+    if (adj.has(from) && adj.has(to)) { adj.get(from).push(to); adj.get(to).push(from); }
+  });
+  const depth = new Map();
+  const headId = data.head;
+  if (headId && adj.has(headId)) {
+    depth.set(headId, 0);
+    const queue = [headId];
+    while (queue.length) {
+      const cur = queue.shift();
+      for (const nb of adj.get(cur) || []) {
+        if (!depth.has(nb)) { depth.set(nb, depth.get(cur) + 1); queue.push(nb); }
+      }
+    }
+  }
+  const byDepth = new Map();
+  (data.nodes || []).forEach(n => {
+    const d = depth.has(n.id) ? depth.get(n.id) : 1;
+    if (!byDepth.has(d)) byDepth.set(d, []);
+    byDepth.get(d).push(n);
+  });
+
+  byDepth.forEach((group, d) => {
+    const radius = d === 0 ? 0 : 7 + d * 7;
+    group.forEach((n, i) => {
+      const angle = (i / group.length) * Math.PI * 2;
+      const pos = d === 0
+        ? { x: 0, y: 0, z: 0 }
+        : { x: Math.cos(angle) * radius, y: (i % 2 === 0 ? 1 : -1) * 2, z: Math.sin(angle) * radius };
+      const node = mkStoneNode(n, pos, n.id === headId, pathHeadIds.has(n.id));
+      nodesById.set(n.id, node);
+    });
+  });
+
+  (data.edges || []).forEach(e => {
+    const m = e.match(/^(.+?)>(.+?):(.+)$/);
+    if (!m) return;
+    const [, fromId, toId, type] = m;
+    const fn = nodesById.get(fromId), tn = nodesById.get(toId);
+    if (fn && tn) makeConn(fn, tn, type);
+  });
+}
+
+function mkStoneNode(n, pos, isHead, isPathHead) {
+  const color = isHead ? COLOR_HEAD : isPathHead ? COLOR_PATHHEAD : COLOR_STONE;
+  const baseEmissive = isHead ? .6 : .3;
+  const grp = new THREE.Group();
+  const geo = new THREE.IcosahedronGeometry(isHead ? 1.3 : 1, 2);
+  const mat = new THREE.MeshPhongMaterial({ color, emissive: color, emissiveIntensity: baseEmissive, shininess:100, transparent: true, opacity: .9 });
+  const m = new THREE.Mesh(geo, mat); grp.add(m);
+  grp.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color, transparent: true, opacity: .5 })));
+  grp.add(new THREE.Mesh(new THREE.IcosahedronGeometry((isHead ? 1.3 : 1) * 1.3, 2), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .12, side: THREE.BackSide })));
+  grp.position.set(pos.x, pos.y, pos.z);
+  scene.add(grp);
+  const node = {
+    id: n.id, hash: n.id.length < 40 ? n.id : n.id, shortHash: n.id.slice(0, 12),
+    title: n.t, lod5: n.lod5, isHead, isPathHead, mesh: grp, baseEmissive,
+  };
+  stoneNodes.push(node);
+  return node;
+}
+
+function makeConn(fn, tn, type) {
+  const color = EDGE_COLORS[type] ?? EDGE_COLORS.references;
+  const curve = new THREE.CatmullRomCurve3([
+    fn.mesh.position.clone(),
+    new THREE.Vector3((fn.mesh.position.x + tn.mesh.position.x) / 2, (fn.mesh.position.y + tn.mesh.position.y) / 2 + 2, (fn.mesh.position.z + tn.mesh.position.z) / 2),
+    tn.mesh.position.clone(),
+  ]);
+  const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 40, .04, 8, false), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .55 }));
+  scene.add(tube);
+  const conn = { fn, tn, type, mesh: tube, curve };
+  conns.push(conn);
+  for (let i = 0; i < 4; i++) {
+    const p = new THREE.Mesh(new THREE.SphereGeometry(.12, 8, 8), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .9 }));
+    scene.add(p);
+    particles.push({ mesh: p, conn, t: i / 4, spd: .004 + Math.random() * .004 });
+  }
+}
+
+// ---- Search (real cairnstone_find_v2 over the current chain) ----
+window.runSearch = async function (query) {
+  if (!query) return;
+  if (!currentChain) { log('Load a chain first', 'warn'); return; }
+  log(`Searching "${query}" in ${currentChain.chain}...`);
+  try {
+    const res = await fetch(`${API}/v2/find`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, chain: currentChain.chain, top_k: 5 }),
+    });
+    const data = await res.json();
+    if (!data.ok) { log(`Search failed: ${data.error || 'unknown error'}`, 'err'); return; }
+    if (!data.matches?.length) { log('No matches', 'warn'); return; }
+    data.matches.forEach(m => log(`hit: ${m.stone.slice(0, 12)} ${m.path || ''} (score ${m.score?.toFixed?.(2)}) — ${(m.preview || '').slice(0, 80)}`));
+    // Highlight matched stones
+    data.matches.forEach(m => {
+      const node = stoneNodes.find(n => n.id.startsWith(m.stone) || m.stone.startsWith(n.id));
+      if (node) { node.mesh.children[0].material.emissiveIntensity = 1; }
+    });
+  } catch (err) {
+    log(`Search error: ${err.message}`, 'err');
+  }
+};
+
+function animate() {
+  requestAnimationFrame(animate);
+  stoneNodes.forEach((n, i) => { n.mesh.children[2].rotation.y += .003; });
+  particles.forEach(p => { p.t += p.spd; if (p.t > 1) p.t = 0; p.mesh.position.copy(p.conn.curve.getPoint(p.t)); });
+  conns.forEach(c => {
+    if (!c.mesh || !c.curve) return;
+    c.curve.points = [c.fn.mesh.position.clone(), new THREE.Vector3((c.fn.mesh.position.x + c.tn.mesh.position.x) / 2, (c.fn.mesh.position.y + c.tn.mesh.position.y) / 2 + 2, (c.fn.mesh.position.z + c.tn.mesh.position.z) / 2), c.tn.mesh.position.clone()];
+    const ng = new THREE.TubeGeometry(c.curve, 40, .04, 8, false); c.mesh.geometry.dispose(); c.mesh.geometry = ng;
+  });
+  renderer.render(scene, camera);
+}
+
+init();
+</script>
+</body>
+</html>
