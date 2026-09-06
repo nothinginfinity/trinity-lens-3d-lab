@@ -56,7 +56,8 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
 .legend-row{display:flex;align-items:center;gap:.4rem;margin:.25rem 0}
 .legend-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
 
-.gizmos{position:absolute;bottom:8px;left:8px;background:var(--bg-panel);border:1px solid rgba(31,184,205,.3);border-radius:10px;padding:.5rem;z-index:800;display:grid;grid-template-columns:repeat(2,1fr);gap:.35rem}
+.gizmos{position:absolute;top:8px;left:8px;background:var(--bg-panel);border:1px solid rgba(31,184,205,.3);border-radius:10px;padding:.5rem;z-index:800;display:grid;grid-template-columns:repeat(2,1fr);gap:.35rem}
+.gizmos.hidden{display:none}
 .gz-btn{width:38px;height:38px;background:rgba(30,30,30,.9);border:1px solid var(--border);border-radius:7px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:1.1rem;transition:all .2s}
 .gz-btn.active{border-color:var(--accent-trinity);background:rgba(255,215,0,.2);box-shadow:0 0 20px rgba(255,215,0,.5)}
 .hints{display:none} /* keyboard hints don't apply on touch; removed instead of overlapping */
@@ -162,7 +163,7 @@ body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
     </div>
   </div>
 
-  <div class="gizmos">
+  <div class="gizmos hidden" id="gizmos">
     <div class="gz-btn" data-gz="translate" onclick="setGizmoMode('translate')">↔️</div>
     <div class="gz-btn" data-gz="rotate"    onclick="setGizmoMode('rotate')">🔄</div>
     <div class="gz-btn" data-gz="scale"     onclick="setGizmoMode('scale')">↕️</div>
@@ -286,11 +287,12 @@ function init() {
 
 // ---- Touch state (separate from mouse state; touch has no e.buttons /
 // e.movementX, so deltas are computed by hand from prior touch positions) ----
-let touchStartPos = null, touchStartTime = 0, touchMoved = false;
+let touchStartPos = null, touchStartTime = 0, touchMoved = false, longPressFired = false;
 let pinchLastDist = null, panLastMid = null;
 let longPressTimer = null;
-const TAP_MOVE_THRESHOLD = 8;   // px — below this, a touch is a "tap" not a drag
-const TAP_MAX_DURATION = 400;   // ms
+// A real touchscreen tap has meaningfully more jitter than a mouse click —
+// 8px was too strict and was silently discarding genuine taps as drags.
+const TAP_MOVE_THRESHOLD = 18; // px — below this, a touch is a "tap" not a drag
 const LONG_PRESS_MS = 550;
 
 function setupEvents() {
@@ -344,7 +346,7 @@ function applyTransformDelta(dx, dy) {
     dragged.mesh.position.x += r.x * dx * .05;
     dragged.mesh.position.z += r.z * dx * .05;
     dragged.mesh.position.y -= dy * .05;
-    if (snap) { ['x', 'y', 'z'].forEach(a => { dragged.mesh.position[a] = Math.round(dragged.mesh.position[a] * 2) / 2; }); }
+    if (snap) { ['x', 'y', 'z'].forEach(a => { dragged.mesh.position[] = Math.round(dragged.mesh.position[a] * 2) / 2; }); }
   } else if (gizmo === 'rotate') {
     dragged.mesh.rotation.y += dx * .01; dragged.mesh.rotation.x += dy * .01;
   } else if (gizmo === 'scale') {
@@ -417,6 +419,7 @@ function onTouchStart(e) {
     touchStartPos = { x: t.clientX, y: t.clientY };
     touchStartTime = Date.now();
     touchMoved = false;
+    longPressFired = false;
     updateMouseNDC(t.clientX, t.clientY);
     // In transform mode, grab the node immediately so dragging can begin
     // on the very next touchmove (mirrors mouse onDown's dragged/dragging).
@@ -427,6 +430,7 @@ function onTouchStart(e) {
     // Long-press => context menu, same as desktop right-click.
     longPressTimer = setTimeout(() => {
       if (!touchMoved && touchStartPos) {
+        longPressFired = true;
         updateMouseNDC(touchStartPos.x, touchStartPos.y);
         const node = pickNodeAtCurrentMouse();
         if (node) { sel(node, true); showCtx(touchStartPos.x, touchStartPos.y); }
@@ -471,7 +475,10 @@ function onTouchMove(e) {
 function onTouchEnd(e) {
   e.preventDefault();
   clearTimeout(longPressTimer);
-  const wasTap = !touchMoved && touchStartPos && (Date.now() - touchStartTime) < TAP_MAX_DURATION;
+  // A tap is any touch that didn't move past the jitter threshold and
+  // wasn't already handled by the long-press timer — no duration cutoff,
+  // since a slightly slower tap is still unambiguously a tap, not a drag.
+  const wasTap = !touchMoved && !longPressFired && touchStartPos;
   if (wasTap && mode !== 'transform') {
     activateNodeAtPoint(touchStartPos.x, touchStartPos.y, false, false);
   }
@@ -497,6 +504,10 @@ function cycleMode() { const ms = ['navigate', 'select', 'transform', 'inspect']
 function setMode(m) {
   mode = m;
   document.querySelectorAll('.mode-btn').forEach(el => { el.classList.remove('active'); if (el.dataset.mode === m) el.classList.add('active'); });
+  // Gizmos only mean anything in Arrange mode — showing them elsewhere is
+  // just confusing clutter, and hiding them here also sidesteps them ever
+  // visually overlapping the log dock.
+  document.getElementById('gizmos').classList.toggle('hidden', m !== 'transform');
   log(`Mode: ${m}`);
 }
 function setGizmoMode(g) {
