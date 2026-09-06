@@ -1,1 +1,5 @@
-PLACEHOLDER
+README.md
+wrangler.toml
+.assetsignore
+.github
+src
