@@ -3,3 +3,9 @@ wrangler.toml
 .assetsignore
 .github
 src
+node_modules
+.wrangler
+.git
+package.json
+package-lock.json
+*.log
